@@ -1,0 +1,125 @@
+import histomicstk as htk
+import numpy as np
+import scipy as sp
+import skimage.io
+import skimage.measure
+import skimage.color
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+%matplotlib inline
+
+#Some nice default configuration for plots
+plt.rcParams['figure.figsize'] = 15, 15
+plt.rcParams['image.cmap'] = 'gray'
+titlesize = 24
+
+inputImageFile = ('/disk2/dataset/1/img_result_Tumor_024_0.jpg')  # Easy1.png
+imInput = skimage.io.imread(inputImageFile)[:, :, :3]
+
+
+refImageFile = ('/disk1/rpn/data/BM_GRAZ/source/BM_GRAZ_HE_0007_01.png')  # L1.png
+
+imReference = skimage.io.imread(refImageFile)[:, :, :3]
+
+# get mean and stddev of reference image in lab space
+meanRef, stdRef = htk.preprocessing.color_conversion.lab_mean_std(imReference)
+
+# perform reinhard color normalization
+imNmzd = htk.preprocessing.color_normalization.reinhard(imInput, meanRef, stdRef)
+
+
+w_est = htk.preprocessing.color_deconvolution.rgb_separate_stains_macenko_pca(imNmzd,I_0=255 )
+I_0=255
+
+stain_color_map = htk.preprocessing.color_deconvolution.stain_color_map
+
+# specify stains of input image
+stains = ['hematoxylin',  # nuclei stain
+          'eosin',        # cytoplasm stain
+          'null']    
+# Perform color deconvolution
+deconv_result = htk.preprocessing.color_deconvolution.color_deconvolution(imInput, w_est, I_0)
+
+print('Estimated stain colors (rows):', w_est.T[:2])
+
+# Display results
+for i in 0, 1:
+    plt.figure()
+    # Unlike SNMF, we're not guaranteed the order of the different stains.
+    # find_stain_index guesses which one we want
+    channel = htk.preprocessing.color_deconvolution.find_stain_index(
+        stain_color_map[stains[i]], w_est)
+    print channel
+    #plt.imshow(deconv_result.Stains[:, :, i])
+    #_ = plt.title(stains[i], fontsize=titlesize)
+    
+    
+    imNucleiStain = deconv_result.Stains[:, :, 1]
+plt.rcParams['figure.figsize'] = 15, 15
+#plt.figure()
+#plt.imshow(imNucleiStain)
+#imNucleiStain =imDeconvolved[:, :, 0]
+foreground_threshold =165
+
+imFgndMask = sp.ndimage.morphology.binary_fill_holes(
+    imNucleiStain < foreground_threshold)
+
+#plt.figure()
+#plt.imshow(imFgndMask)
+
+
+imNucleicompact = htk.segmentation.label.compact(imFgndMask, compaction=3)
+
+min_radius = 5
+max_radius = 30
+
+imLog = htk.filters.shape.clog(imNucleiStain, imNucleicompact,
+                               sigma_min=min_radius * np.sqrt(2),
+                               sigma_max=max_radius * np.sqrt(2))
+
+# detect and segment nuclei using local maximum clustering
+local_max_search_radius = 10
+
+imNucleiSegMask1, Seeds, Max = htk.segmentation.nuclear.max_clustering(
+    imLog[0], imFgndMask, local_max_search_radius)
+
+
+
+# filter out small objects
+min_nucleus_area = 80
+
+imNucleiSegMask = htk.segmentation.label.area_open(
+    imNucleiSegMask1, min_nucleus_area).astype(np.int)
+
+# compute nuclei properties
+objProps = skimage.measure.regionprops(imNucleiSegMask)
+
+print 'Number of nuclei = ', len(objProps)
+
+
+imNucleicompact1 = htk.segmentation.label.compact(imNucleiSegMask, compaction=3)
+
+
+k= (imNucleicompact==-1)
+imNucleicompact2=np.copy(k)
+plt.rcParams['figure.figsize'] = 15,15    
+for ii in range(0,k.shape[0]):
+    for jj in range(0,k.shape[1]):
+        if imNucleicompact[ii,jj]>0:
+            imNucleicompact2[ii,jj]=1
+imNucleicompact2.dtype=np.uint8   
+
+imNucleicompact2_dilate_xor = htk.segmentation.label.dilate_xor(imNucleicompact2, neigh_width=2)
+
+imInput2 = np.copy(imInput)
+
+for i in range(0,imInput.shape[0]):
+    for j in range(0,imInput.shape[1]):
+        if imNucleicompact2_dilate_xor[i,j]>0:
+            imInput2[i,j,0] = 0
+            imInput2[i,j,1] = 255
+            imInput2[i,j,2] = 0
+plt.rcParams['figure.figsize'] = 15, 15
+plt.figure()
+plt.imshow( imInput2 )
+plt.show()
